@@ -98,12 +98,64 @@ Response:
 `source` is either `captions` (fetched from YouTube) or `whisper`
 (transcribed locally). `GET /api/health` returns `{"status": "ok"}`.
 
+## Authentication (GitHub OAuth + allowlist)
+
+Optional but recommended for any public deploy. When `SESSION_SECRET` is
+set, `/api/transcribe` requires a valid Bearer token, which the UI obtains
+via a GitHub OAuth round-trip. Only GitHub logins listed in
+`ALLOWED_USERS` are accepted.
+
+### One-time GitHub setup
+
+1. Open <https://github.com/settings/developers> → **New OAuth App**.
+2. Fill in:
+   - **Homepage URL**: `https://<your-user>.github.io/<repo>/`
+   - **Authorization callback URL**: `https://<your-backend>.fly.dev/auth/callback`
+3. Note the **Client ID**, generate a **Client Secret**.
+
+### Backend env vars
+
+```shell
+fly secrets set \
+    SESSION_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+    GITHUB_CLIENT_ID="..." \
+    GITHUB_CLIENT_SECRET="..." \
+    ALLOWED_USERS="your-gh-login,another-gh-login" \
+    BACKEND_URL="https://your-backend.fly.dev" \
+    FRONTEND_URL="https://<your-user>.github.io/<repo>" \
+    CORS_ORIGINS="https://<your-user>.github.io"
+```
+
+Leave `SESSION_SECRET` unset to bypass auth entirely (useful for local
+dev — the UI shows "Auth disabled on backend").
+
+### How it works
+
+1. User clicks **Login with GitHub** → frontend redirects to
+   `GET /auth/login` on the backend.
+2. Backend redirects to GitHub's authorize endpoint with a signed,
+   short-lived state.
+3. GitHub redirects back to `GET /auth/callback`; backend exchanges the
+   code for a user, checks `ALLOWED_USERS`, then redirects to
+   `FRONTEND_URL#token=<signed-session>`.
+4. Frontend stores the token in `localStorage` and sends it as
+   `Authorization: Bearer …` on every API call.
+
+No server-side session store — both state and session are signed with
+`itsdangerous` and expire (10 min / 24 h).
+
 ## Configuration
 
-| Env var        | Default | Description                                    |
-|----------------|---------|------------------------------------------------|
-| `PORT`         | `5000`  | Port the app listens on.                       |
-| `CORS_ORIGINS` | `*`     | Comma-separated allowed origins for `/api/*`.  |
+| Env var               | Default | Description                                                   |
+|-----------------------|---------|---------------------------------------------------------------|
+| `PORT`                | `5000`  | Port the app listens on.                                      |
+| `CORS_ORIGINS`        | `*`     | Comma-separated allowed origins for `/api/*` and `/auth/me`.  |
+| `SESSION_SECRET`      | unset   | Required to enable auth. Signs state + session tokens.        |
+| `GITHUB_CLIENT_ID`    | unset   | GitHub OAuth App client ID.                                   |
+| `GITHUB_CLIENT_SECRET`| unset   | GitHub OAuth App client secret.                               |
+| `ALLOWED_USERS`       | unset   | Comma-separated GitHub logins allowed to sign in.             |
+| `BACKEND_URL`         | unset   | Public base URL of the backend (for OAuth `redirect_uri`).    |
+| `FRONTEND_URL`        | unset   | Public URL of the Pages UI (where to redirect after OAuth).   |
 
 ## Notes
 

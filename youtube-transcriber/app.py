@@ -6,16 +6,31 @@ import os
 
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
+from auth import auth_bp, require_auth
 from transcriber import TranscriberError, transcribe
 
 
 app = Flask(__name__)
 
+# Trust X-Forwarded-* from the platform proxy (Fly.io, Render, etc.) so that
+# request.url_root reflects the public HTTPS URL.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
 # Allow the static GitHub Pages UI (and any other configured origin) to call us.
 # Override with CORS_ORIGINS env var, e.g. "https://user.github.io,https://example.com".
-_origins = os.environ.get("CORS_ORIGINS", "*").split(",")
-CORS(app, resources={r"/api/*": {"origins": [o.strip() for o in _origins if o.strip()]}})
+_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+CORS(
+    app,
+    resources={
+        r"/api/*": {"origins": _origins},
+        r"/auth/me": {"origins": _origins},
+        r"/auth/logout": {"origins": _origins},
+    },
+)
+
+app.register_blueprint(auth_bp)
 
 
 @app.route("/")
@@ -29,6 +44,7 @@ def health():
 
 
 @app.post("/api/transcribe")
+@require_auth
 def api_transcribe():
     data = request.get_json(silent=True) or request.form
     url = (data.get("url") or "").strip()

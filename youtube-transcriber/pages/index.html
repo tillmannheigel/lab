@@ -60,31 +60,36 @@
         .badge.whisper  { background: #3a2a1f; color: var(--warn); }
         .error { background: #3a1f1f; border: 1px solid #5a2a2a; color: var(--err);
             padding: 12px 14px; border-radius: 8px; margin-top: 18px; }
-        .api-banner { display: flex; gap: 10px; align-items: center;
-            font-size: 13px; color: var(--muted); margin-bottom: 16px; }
-        .api-banner .dot { width: 8px; height: 8px; border-radius: 50%;
+        .banner { display: flex; gap: 10px; align-items: center;
+            font-size: 13px; color: var(--muted); margin-bottom: 12px;
+            flex-wrap: wrap; }
+        .banner .dot { width: 8px; height: 8px; border-radius: 50%;
             background: var(--muted); }
-        .api-banner .dot.ok { background: var(--ok); }
-        .api-banner .dot.err { background: var(--err); }
+        .banner .dot.ok { background: var(--ok); }
+        .banner .dot.err { background: var(--err); }
+        .banner .spacer { flex: 1; }
         details { margin-top: 14px; }
         summary { cursor: pointer; color: var(--muted); font-size: 13px; }
         a { color: var(--accent-2); }
         code { background: var(--panel-2); padding: 1px 6px; border-radius: 4px;
             font-size: 12px; }
+        .locked { opacity: 0.5; pointer-events: none; }
     </style>
+    <script src="config.js"></script>
 </head>
 <body>
 <div class="wrap">
     <h1>YouTube Transcriber</h1>
     <p class="sub">
-        Static frontend hosted on GitHub Pages. Point it at a backend running the
-        Flask API to transcribe videos (captions first, Whisper fallback).
+        Static frontend hosted on GitHub Pages. Point it at a backend running
+        the Flask API to transcribe videos (captions first, Whisper fallback).
     </p>
 
-    <div class="api-banner">
+    <div class="banner">
         <span class="dot" id="apiDot"></span>
         <span>Backend: <code id="apiCurrent">—</code></span>
-        <button type="button" class="ghost" id="apiEdit" style="margin-left:auto">Change</button>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" id="apiEdit">Change</button>
     </div>
 
     <div class="card" id="apiCard" hidden>
@@ -95,6 +100,14 @@
             <button type="button" class="ghost" id="apiTest">Test connection</button>
             <span class="status" id="apiStatus"></span>
         </div>
+    </div>
+
+    <div class="banner" id="authBanner">
+        <span class="dot" id="authDot"></span>
+        <span id="authText">Checking authentication…</span>
+        <span class="spacer"></span>
+        <button type="button" id="loginBtn" hidden>Login with GitHub</button>
+        <button type="button" class="ghost" id="logoutBtn" hidden>Logout</button>
     </div>
 
     <form id="form">
@@ -152,22 +165,24 @@
 </div>
 
 <script>
-const STORAGE_KEY = 'ytt.apiBase';
-const DEFAULT_API = ''; // build-time override; see config.js
+const API_KEY = 'ytt.apiBase';
+const TOK_KEY = 'ytt.token';
 const $ = (id) => document.getElementById(id);
 
+// ---------- backend URL ----------
 function getApiBase() {
     const fromQuery = new URLSearchParams(location.search).get('api');
     if (fromQuery) {
-        localStorage.setItem(STORAGE_KEY, fromQuery);
+        localStorage.setItem(API_KEY, fromQuery);
         return fromQuery;
     }
-    return localStorage.getItem(STORAGE_KEY) || window.YTT_API_BASE || DEFAULT_API;
+    return localStorage.getItem(API_KEY) || window.YTT_API_BASE || '';
 }
 function setApiBase(v) {
-    if (v) { localStorage.setItem(STORAGE_KEY, v); }
-    else   { localStorage.removeItem(STORAGE_KEY); }
+    if (v) { localStorage.setItem(API_KEY, v); }
+    else   { localStorage.removeItem(API_KEY); }
     renderApiBanner();
+    refreshAuth();
 }
 function renderApiBanner() {
     const base = getApiBase();
@@ -176,6 +191,95 @@ function renderApiBanner() {
     $('apiDot').className = 'dot' + (base ? '' : ' err');
 }
 
+// ---------- auth token ----------
+function getToken() { return localStorage.getItem(TOK_KEY) || ''; }
+function setToken(t) {
+    if (t) { localStorage.setItem(TOK_KEY, t); }
+    else   { localStorage.removeItem(TOK_KEY); }
+}
+function authHeaders() {
+    const t = getToken();
+    return t ? {'Authorization': 'Bearer ' + t} : {};
+}
+
+// On load, see if we just got redirected back from OAuth with #token=... or #error=...
+function consumeHash() {
+    if (!location.hash) return;
+    const params = new URLSearchParams(location.hash.slice(1));
+    const tok = params.get('token');
+    const err = params.get('error');
+    if (tok) {
+        setToken(tok);
+    }
+    if (err) {
+        showError('Login failed: ' + err);
+    }
+    if (tok || err) {
+        history.replaceState(null, '', location.pathname + location.search);
+    }
+}
+
+async function refreshAuth() {
+    const base = getApiBase();
+    if (!base) {
+        renderAuth({state: 'no-backend'});
+        return;
+    }
+    try {
+        const res = await fetch(base + '/auth/me', {headers: authHeaders()});
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (!data.auth_required) {
+            renderAuth({state: 'open'});
+        } else if (data.authenticated) {
+            renderAuth({state: 'in', user: data.user});
+        } else {
+            renderAuth({state: 'out'});
+        }
+    } catch (err) {
+        renderAuth({state: 'unreachable', message: err.message});
+    }
+}
+
+function renderAuth(s) {
+    const dot = $('authDot');
+    const text = $('authText');
+    const loginBtn = $('loginBtn');
+    const logoutBtn = $('logoutBtn');
+    const form = $('form');
+    loginBtn.hidden = true;
+    logoutBtn.hidden = true;
+    form.classList.remove('locked');
+
+    if (s.state === 'no-backend') {
+        dot.className = 'dot err';
+        text.textContent = 'No backend configured.';
+        form.classList.add('locked');
+    } else if (s.state === 'unreachable') {
+        dot.className = 'dot err';
+        text.textContent = 'Backend unreachable: ' + (s.message || '');
+        form.classList.add('locked');
+    } else if (s.state === 'open') {
+        dot.className = 'dot ok';
+        text.textContent = 'Auth disabled on backend.';
+    } else if (s.state === 'in') {
+        dot.className = 'dot ok';
+        text.textContent = 'Signed in as ' + s.user;
+        logoutBtn.hidden = false;
+    } else {
+        dot.className = 'dot err';
+        text.textContent = 'Not signed in.';
+        loginBtn.hidden = false;
+        form.classList.add('locked');
+    }
+}
+
+function showError(msg) {
+    $('error').textContent = msg;
+    $('error').hidden = false;
+}
+
+// ---------- wiring ----------
 $('apiEdit').addEventListener('click', () => { $('apiCard').hidden = !$('apiCard').hidden; });
 $('apiSave').addEventListener('click', () => {
     setApiBase($('apiUrl').value.trim().replace(/\/+$/, ''));
@@ -188,31 +292,33 @@ $('apiTest').addEventListener('click', async () => {
     $('apiStatus').textContent = 'Testing…';
     try {
         const res = await fetch(base + '/api/health');
-        if (res.ok) {
-            $('apiStatus').textContent = '✓ reachable';
-            $('apiDot').className = 'dot ok';
-        } else {
-            $('apiStatus').textContent = `✗ HTTP ${res.status}`;
-            $('apiDot').className = 'dot err';
-        }
+        $('apiStatus').textContent = res.ok ? '✓ reachable' : `✗ HTTP ${res.status}`;
     } catch (err) {
         $('apiStatus').textContent = '✗ ' + err.message;
-        $('apiDot').className = 'dot err';
     }
 });
 
-renderApiBanner();
+$('loginBtn').addEventListener('click', () => {
+    const base = getApiBase();
+    if (!base) { showError('Configure backend URL first.'); return; }
+    window.location.href = base + '/auth/login';
+});
+$('logoutBtn').addEventListener('click', async () => {
+    const base = getApiBase();
+    if (base) {
+        try { await fetch(base + '/auth/logout', {method: 'POST', headers: authHeaders()}); }
+        catch {}
+    }
+    setToken('');
+    refreshAuth();
+});
 
 $('form').addEventListener('submit', async (e) => {
     e.preventDefault();
     $('error').hidden = true;
     $('result').hidden = true;
     const base = getApiBase();
-    if (!base) {
-        $('error').textContent = 'No backend configured. Click "Change" above to set one.';
-        $('error').hidden = false;
-        return;
-    }
+    if (!base) { showError('No backend configured.'); return; }
     $('go').disabled = true;
     $('status').textContent = 'Working… (Whisper fallback can take a minute)';
 
@@ -226,13 +332,18 @@ $('form').addEventListener('submit', async (e) => {
     try {
         const res = await fetch(base + '/api/transcribe', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', ...authHeaders()},
             body: JSON.stringify(payload),
         });
         const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+            setToken('');
+            refreshAuth();
+            showError('Session expired — please sign in again.');
+            return;
+        }
         if (!res.ok) {
-            $('error').textContent = data.error || `Request failed (HTTP ${res.status}).`;
-            $('error').hidden = false;
+            showError(data.error || `Request failed (HTTP ${res.status}).`);
             return;
         }
         $('src').textContent = data.source;
@@ -243,8 +354,7 @@ $('form').addEventListener('submit', async (e) => {
         $('text').value = data.text;
         $('result').hidden = false;
     } catch (err) {
-        $('error').textContent = 'Network error: ' + err.message;
-        $('error').hidden = false;
+        showError('Network error: ' + err.message);
     } finally {
         $('go').disabled = false;
         $('status').textContent = '';
@@ -263,7 +373,11 @@ $('download').addEventListener('click', () => {
     a.click();
     URL.revokeObjectURL(a.href);
 });
+
+// ---------- boot ----------
+consumeHash();
+renderApiBanner();
+refreshAuth();
 </script>
-<script src="config.js"></script>
 </body>
 </html>
