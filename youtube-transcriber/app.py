@@ -5,16 +5,27 @@ from __future__ import annotations
 import os
 
 from flask import Flask, jsonify, render_template, request
+from flask_cors import CORS
 
 from transcriber import TranscriberError, transcribe
 
 
 app = Flask(__name__)
 
+# Allow the static GitHub Pages UI (and any other configured origin) to call us.
+# Override with CORS_ORIGINS env var, e.g. "https://user.github.io,https://example.com".
+_origins = os.environ.get("CORS_ORIGINS", "*").split(",")
+CORS(app, resources={r"/api/*": {"origins": [o.strip() for o in _origins if o.strip()]}})
+
 
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/api/health")
+def health():
+    return jsonify({"status": "ok"})
 
 
 @app.post("/api/transcribe")

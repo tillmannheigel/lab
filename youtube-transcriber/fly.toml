@@ -1,0 +1,25 @@
+# Fly.io config — adjust app name and region, then run:
+#   fly launch --no-deploy --copy-config
+#   fly secrets set CORS_ORIGINS="https://<your-user>.github.io"
+#   fly deploy
+app = "youtube-transcriber-CHANGEME"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  # Whisper models need RAM. 1 GB works for tiny/base; bump to 2 GB for small+.
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

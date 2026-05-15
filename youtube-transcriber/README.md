@@ -5,32 +5,70 @@ existing YouTube captions first, and falls back to local
 [OpenAI Whisper](https://github.com/openai/whisper) if no captions are
 available.
 
+Two deploy modes:
+
+- **All-in-one local**: Flask serves both the UI (`templates/index.html`) and
+  the API. Good for personal use.
+- **Split deploy**: static UI on **GitHub Pages** (`pages/`), Flask API on
+  any container host (Fly.io, Render, Hugging Face Spaces, …). The UI talks
+  to the API via CORS.
+
 ## Requirements
 
 - Python 3.10+
-- [`ffmpeg`](https://ffmpeg.org/) on `PATH` (required by Whisper / yt-dlp)
+- [`ffmpeg`](https://ffmpeg.org/) on `PATH` (required by yt-dlp / Whisper)
 
-## Setup
+## Run locally (all-in-one)
 
 ```shell
 cd youtube-transcriber
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-## Run
-
-```shell
 python app.py
 ```
 
-Then open <http://127.0.0.1:5000>.
+Open <http://127.0.0.1:5000>. Set `PORT=8000` to use another port.
 
-Set `PORT` to use a different port:
+## Split deploy: Pages UI + Fly.io backend
+
+### 1. Deploy the backend to Fly.io
 
 ```shell
-PORT=8000 python app.py
+cd youtube-transcriber
+fly launch --no-deploy --copy-config        # edit app name in fly.toml first
+fly secrets set CORS_ORIGINS="https://<your-user>.github.io"
+fly deploy
+```
+
+The `Dockerfile` installs `ffmpeg` and starts the app via `gunicorn` on port
+8080. Adjust `[[vm]] memory` in `fly.toml` if you use larger Whisper models
+(`small`+ → 2 GB recommended).
+
+Any container host works — Render, Railway, Hugging Face Spaces, your own
+server. The only requirements are: expose the Flask app, set
+`CORS_ORIGINS` to your Pages origin, install `ffmpeg`.
+
+### 2. Publish the UI to GitHub Pages
+
+1. In **Settings → Pages**, set the source to **GitHub Actions**.
+2. Push to `main`. The workflow at `.github/workflows/pages.yml` deploys
+   `youtube-transcriber/pages/` to `https://<your-user>.github.io/<repo>/`.
+3. Open the Pages site, click **Change** next to "Backend", and paste your
+   Fly.io URL (e.g. `https://youtube-transcriber-xyz.fly.dev`). It's stored
+   in `localStorage`.
+
+To hard-code the backend URL for everyone, edit
+`youtube-transcriber/pages/config.js`:
+
+```js
+window.YTT_API_BASE = "https://your-backend.fly.dev";
+```
+
+The UI also accepts a `?api=` query param, which overrides storage:
+
+```
+https://<your-user>.github.io/<repo>/?api=https://your-backend.fly.dev
 ```
 
 ## API
@@ -57,13 +95,22 @@ Response:
 }
 ```
 
-`source` is either `captions` (fetched from YouTube) or `whisper` (transcribed
-locally).
+`source` is either `captions` (fetched from YouTube) or `whisper`
+(transcribed locally). `GET /api/health` returns `{"status": "ok"}`.
+
+## Configuration
+
+| Env var        | Default | Description                                    |
+|----------------|---------|------------------------------------------------|
+| `PORT`         | `5000`  | Port the app listens on.                       |
+| `CORS_ORIGINS` | `*`     | Comma-separated allowed origins for `/api/*`.  |
 
 ## Notes
 
 - Whisper model sizes: `tiny`, `base`, `small`, `medium`, `large`. Larger is
-  more accurate but much slower and downloads a bigger model on first use.
-- The first Whisper run downloads the model weights — that initial call may
-  take a while.
-- Captions are usually instant; Whisper transcription scales with video length.
+  more accurate but slower and downloads bigger weights on first use.
+- The first Whisper run downloads model weights — that call may take a
+  while. Mount a volume in production if you don't want to redownload on
+  every machine restart.
+- Captions are usually instant; Whisper transcription scales with video
+  length.
